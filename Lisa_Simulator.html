@@ -1,0 +1,323 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>Lisa Simulator</title>
+<style>
+  :root { --ink:#17131a; --paper:#efe5d2; --pink:#d28aa5; --green:#657b58; }
+  *{box-sizing:border-box}
+  body{margin:0;background:#111;color:#fff;font-family:monospace;display:flex;min-height:100vh;align-items:center;justify-content:center}
+  #wrap{width:min(100vw,960px);padding:8px}
+  canvas{display:block;width:100%;height:auto;image-rendering:pixelated;image-rendering:crisp-edges;background:#222;border:4px solid #000}
+  #help{font-size:12px;text-align:center;line-height:1.5;margin-top:6px;color:#ddd}
+  #touch{display:none;position:fixed;left:10px;right:10px;bottom:10px;justify-content:space-between;pointer-events:none}
+  .pad{display:grid;grid-template-columns:repeat(3,48px);gap:4px;pointer-events:auto}
+  button{font:inherit;border:3px solid #111;background:#eadcc4;color:#111;padding:8px;box-shadow:3px 3px #000}
+  .pad button{width:48px;height:48px}
+  .actions{display:flex;gap:6px;align-items:end;pointer-events:auto}
+  @media (max-width:700px){#touch{display:flex}#help{font-size:10px}.actions button{width:64px;height:48px}}
+</style>
+</head>
+<body>
+<div id="wrap">
+<canvas id="game" width="960" height="540"></canvas>
+<div id="help">WASD / Pfeiltasten: laufen · E / Enter / Leertaste: interagieren · M: Musik · ESC: schließen</div>
+</div>
+<div id="touch">
+  <div class="pad">
+    <span></span><button data-key="ArrowUp">▲</button><span></span>
+    <button data-key="ArrowLeft">◀</button><button data-key="ArrowDown">▼</button><button data-key="ArrowRight">▶</button>
+  </div>
+  <div class="actions"><button data-key="KeyE">E</button><button data-key="KeyM">Music</button></div>
+</div>
+
+<script>
+"use strict";
+const c=document.getElementById("game"),ctx=c.getContext("2d");
+const W=c.width,H=c.height;
+ctx.imageSmoothingEnabled=false;
+
+const keys={};
+let scene="home", sub="hall", musicOn=true, cafeWorking=false;
+let overlay=null, toast="", toastTimer=0;
+let outfit={top:0,bottom:0,hat:0,shoes:0,socks:0};
+let dialogueIndex=0;
+
+const player={x:480,y:390,w:22,h:30,speed:2.4};
+const homeRooms=["bedroom","hall","kitchen","living"];
+const colors=["#2b2030","#6f4c55","#20252d","#836a5c","#40533d"];
+
+const dialogue=[
+"Hey Lisa. Willkommen in meinem Apartment.",
+"Also, ich habe gestern nochmal über die Runde nachgedacht.",
+"Unser aktueller Cap Table ist eigentlich ziemlich elegant.",
+"Der Lead-Investor will nur einen kleinen zusätzlichen Anteil.",
+"Dadurch würde unser Founder-Dilution-Modell aber anders aussehen.",
+"Ich glaube, wir sollten das vor dem nächsten Board-Call sauber modellieren.",
+"Und dann müssen wir noch über unsere Runway sprechen.",
+"Wenn wir die Burn Rate so lassen, sind wir ziemlich entspannt.",
+"Anyway: Ich habe dazu ungefähr vierzehn Tabs offen."
+];
+
+function rect(x,y,w,h,col){ctx.fillStyle=col;ctx.fillRect(Math.round(x),Math.round(y),Math.round(w),Math.round(h))}
+function txt(s,x,y,size=18,col="#17131a",align="left"){
+  ctx.fillStyle=col;ctx.font=`${size}px monospace`;ctx.textAlign=align;ctx.textBaseline="top";ctx.fillText(s,x,y);
+}
+function wrapText(s,x,y,maxWidth,lineH,size=18,col="#17131a"){
+  ctx.font=`${size}px monospace`;ctx.fillStyle=col;ctx.textAlign="left";ctx.textBaseline="top";
+  const words=s.split(" ");let line="";
+  for(const w of words){const test=line?line+" "+w:w;if(ctx.measureText(test).width>maxWidth&&line){ctx.fillText(line,x,y);y+=lineH;line=w}else line=test}
+  if(line)ctx.fillText(line,x,y);
+}
+function toastMsg(s){toast=s;toastTimer=150}
+function title(t,subt){
+  rect(0,0,W,56,"#17131a");txt(t,22,12,24,"#efe5d2");txt(subt,W-22,15,14,"#d28aa5","right");
+}
+function musicSwitch(){
+  musicOn=!musicOn;
+  if(musicOn) startMusic(); else stopMusic();
+  toastMsg("Music: "+(musicOn?"ON":"OFF"));
+}
+let audio=null, master=null, musicTimer=null;
+function startMusic(){
+  if(audio) return;
+  try{
+    audio=new (window.AudioContext||window.webkitAudioContext)();
+    master=audio.createGain();master.gain.value=.055;master.connect(audio.destination);
+    const bass=[55,55,65.41,73.42,55,82.41,73.42,65.41];
+    let step=0;
+    musicTimer=setInterval(()=>{
+      if(!audio||!musicOn)return;
+      const o=audio.createOscillator(),g=audio.createGain();
+      o.type="square";o.frequency.value=bass[step++%bass.length];
+      g.gain.setValueAtTime(.0001,audio.currentTime);g.gain.exponentialRampToValueAtTime(.11,audio.currentTime+.01);
+      g.gain.exponentialRampToValueAtTime(.0001,audio.currentTime+.20);
+      o.connect(g);g.connect(master);o.start();o.stop(audio.currentTime+.22);
+      if(step%4===0){
+        const n=audio.createOscillator(),ng=audio.createGain();n.type="sawtooth";n.frequency.value=110;
+        ng.gain.setValueAtTime(.0001,audio.currentTime);ng.gain.exponentialRampToValueAtTime(.025,audio.currentTime+.01);
+        ng.gain.exponentialRampToValueAtTime(.0001,audio.currentTime+.08);n.connect(ng);ng.connect(master);n.start();n.stop(audio.currentTime+.1);
+      }
+    },260);
+  }catch(e){}
+}
+function stopMusic(){if(musicTimer)clearInterval(musicTimer);musicTimer=null;if(audio){audio.close();audio=null;master=null}}
+
+function drawBackground(){
+  if(scene==="home") drawHome();
+  else if(scene==="street") drawStreet();
+  else if(scene==="cafe") drawCafe();
+  else if(scene==="milan") drawMilan();
+  if(scene==="station") drawStation();
+}
+function drawHome(){
+  rect(0,0,W,H,"#bda98f");
+  if(sub==="bedroom"){
+    rect(0,70,W,H-70,"#443844"); rect(0,400,W,140,"#755f54");
+    // bed
+    rect(95,285,300,115,"#211c2a");rect(105,275,105,70,"#d7c1ad");rect(210,300,175,70,"#8d4f65");
+    // dresser
+    rect(680,285,130,105,"#5a4035");for(let i=0;i<3;i++)rect(695,300+i*25,100,15,"#80604b");
+    // posters
+    rect(440,105,150,90,"#dfcfae");rect(610,120,120,80,"#b98b91");
+    txt("90s / ROCK",515,138,15,"#2b2030","center");txt("★ ★ ★",670,145,18,"#2b2030","center");
+    // bass
+    rect(550,305,10,90,"#111");rect(557,318,65,12,"#9b613f");rect(610,306,12,35,"#9b613f");
+    drawPlant(60,375); drawPlayer();
+    interactHint("E Bass spielen","Spiegel: fertig machen");
+  } else if(sub==="kitchen"){
+    rect(0,70,W,H-70,"#e2d5bd");rect(0,405,W,135,"#9c775f");
+    rect(70,290,300,115,"#c5b7a0");rect(80,270,110,20,"#725e51");rect(210,330,120,12,"#725e51");
+    // coffee machine
+    rect(125,220,90,60,"#222");rect(140,205,55,15,"#555");rect(155,230,30,30,"#8f6c53");
+    // window
+    rect(560,120,250,190,"#314c61");rect(680,120,4,190,"#d9c8a9");rect(560,210,250,4,"#d9c8a9");
+    rect(570,225,230,75,"#5d7d58");txt("GARTEN",685,150,16,"#efe5d2","center");
+    drawPlant(420,385);drawPlayer();interactHint("Kaffeemaschine: Kaffee trinken","Fenster: hinausschauen");
+  } else if(sub==="living"){
+    rect(0,70,W,H-70,"#cdb99b");rect(0,410,W,130,"#765d51");
+    rect(90,310,380,95,"#4b3d45");rect(120,270,80,70,"#65535a");
+    rect(600,135,250,175,"#496047");rect(615,150,220,145,"#6f8e63");
+    drawPlant(510,380);drawPlayer();interactHint("Keine Interaktion","Garten → durch die grüne Tür");
+  } else {
+    rect(0,70,W,H-70,"#9b806f");rect(0,430,W,110,"#5d4a43");
+    // doors
+    door(90,220,"SCHLAFZIMMER");door(380,220,"KÜCHE");door(670,220,"WOHNZIMMER");
+    door(450,90,"HAUSTÜR");
+    drawPlayer();interactHint("Wohnung: frei bewegen","Haustür → Straße");
+  }
+}
+function door(x,y,label){rect(x,y,150,180,"#3a2830");txt(label,x+75,y+190,13,"#efe5d2","center")}
+function drawPlant(x,y){rect(x,y-45,8,45,"#4d593c");rect(x-18,y-30,22,15,"#647a4d");rect(x+5,y-20,22,15,"#647a4d");}
+function drawStreet(){
+  rect(0,0,W,H,"#6e7280");rect(0,70,W,470,"#8d806e");rect(0,410,W,130,"#393a3d");
+  rect(40,150,230,220,"#a08c7b");txt("LISA",155,175,26,"#2d2730","center");txt("ZUHAUSE",155,208,16,"#2d2730","center");
+  rect(365,150,230,220,"#d0a878");txt("EISCAFÉ",480,175,26,"#3a2420","center");txt("SIENA",480,208,20,"#3a2420","center");
+  rect(690,150,220,220,"#6b6870");txt("FRANKFURT",800,175,18,"#eee2c8","center");txt("BAHNHOF",800,205,22,"#eee2c8","center");
+  rect(0,390,W,8,"#d0b27e");drawPerson(850,350,"#2b2328");txt("...",850,318,18,"#ddd","center");
+  drawPlayer();interactHint("Gebäude betreten","Bahnhof → Milan");
+}
+function drawPerson(x,y,col){rect(x-9,y-34,18,22,"#c79d7b");rect(x-11,y-12,22,24,col);rect(x-9,y+12,7,20,"#222");rect(x+2,y+12,7,20,"#222")}
+function drawStation(){
+  rect(0,0,W,H,"#aaa4a0");rect(0,60,W,480,"#6f6b70");rect(0,405,W,135,"#343439");
+  rect(80,110,800,210,"#d5c8ae");txt("FRANKFURT HBF",480,140,36,"#25232a","center");
+  rect(180,225,600,80,"#25252a");txt("BAHNSTEIG",480,250,18,"#efe5d2","center");
+  drawPerson(830,360,"#2d2630");txt("...","830",325,18,"#eee","center");drawPlayer();
+  interactHint("E / Enter: In die Bahn einsteigen","Nach ~5 Sekunden bei Milan");
+}
+function drawCafe(){
+  rect(0,0,W,H,"#e7c9aa");rect(0,80,W,460,"#a76e63");rect(0,410,W,130,"#5a413b");
+  rect(55,125,850,55,"#4b2c35");txt("EISCAFÉ SIENA",480,137,28,"#f3dfbd","center");
+  rect(80,300,800,55,"#d6b37f");for(let i=0;i<4;i++)drawPerson(170+i*190,300,"#59464b");
+  rect(720,205,130,75,"#26262a");txt("PC",785,230,24,"#aab3a6","center");
+  if(cafeWorking){rect(player.x-18,player.y+8,55,10,"#efe5d2");rect(player.x+15,player.y-2,25,15,"#fff0c7");}
+  drawPlayer();interactHint("PC: Arbeit beginnen","Kunde: Kuchen ins Gesicht");
+}
+function drawMilan(){
+  rect(0,0,W,H,"#c9b6a0");rect(0,420,W,120,"#62534b");
+  rect(70,140,240,180,"#4b5e63");rect(95,165,190,125,"#75909a");txt("CITY VIEW",190,190,14,"#efe5d2","center");
+  rect(630,310,220,80,"#3b3034");rect(675,270,130,45,"#4e3d41");
+  drawPerson(480,365,"#15161b");txt("MILAN",480,410,16,"#eee2cf","center");
+  drawPlayer();
+}
+function drawPlayer(){
+  const x=player.x,y=player.y;
+  // hair
+  rect(x-8,y-30,18,18,"#1c1717");rect(x-11,y-24,5,25,"#1c1717");rect(x+8,y-24,5,24,"#1c1717");
+  rect(x-6,y-22,14,14,"#ead5c2"); // face
+  // clothes
+  rect(x-8,y-9,17,20,["#222","#7c334b","#5b6178"][outfit.top]);rect(x-9,y+10,8,14,["#25242a","#7a5a43","#1d2531"][outfit.bottom]);rect(x+1,y+10,8,14,["#25242a","#7a5a43","#1d2531"][outfit.bottom]);
+  rect(x-10,y+23,9,5,"#2a2020");rect(x+1,y+23,9,5,"#2a2020");
+}
+function interactHint(a,b){
+  rect(18,470,924,52,"rgba(0,0,0,.72)");
+  txt("E",35,484,20,"#d28aa5");txt(a,60,486,14,"#fff");
+  if(b)txt(" · "+b,330,486,14,"#fff");
+}
+function render(){
+  drawBackground();
+  title(scene==="home"?"LISA SIMULATOR":scene==="street"?"STRASSE":scene==="cafe"?"EISCAFÉ SIENA":scene==="station"?"BAHNHOF":"MILANS WOHNUNG",
+        scene==="cafe"?"MUSIC: OFF":("MUSIC: "+(musicOn?"ON":"OFF")));
+  if(toastTimer>0){rect(360,70,240,38,"#17131a");txt(toast,480,80,15,"#efe5d2","center");toastTimer--}
+  if(overlay) drawOverlay();
+}
+function drawOverlay(){
+  rect(0,0,W,H,"rgba(0,0,0,.55)");
+  if(overlay==="mirror"){
+    rect(220,70,520,420,"#eadcc4");txt("SPIEGEL",480,92,22,"#17131a","center");
+    rect(400,135,160,230,"#87919b");drawPlayerAt(480,315,2.5);
+    txt("OUTFIT",480,390,18,"#17131a","center");
+    txt("1-3 Oberteil   1-3 Unterteil",480,420,14,"#17131a","center");
+    txt("1-3 Hut         1-3 Schuhe/Strümpfe",480,443,14,"#17131a","center");
+    txt("1/2/3 wechseln · ESC schließen",480,468,13,"#5a4b42","center");
+  } else if(overlay==="bass"){
+    rect(150,95,660,350,"#211c2a");txt("E BASS",480,120,26,"#d28aa5","center");
+    txt("Lisa sitzt und spielt eine eigene, grungige Alt-Rock-Bassline.",480,170,15,"#efe5d2","center");
+    // little fake amp
+    rect(350,230,260,130,"#111");for(let i=0;i<6;i++)rect(375+i*38,255,20,80,"#2d2d32");
+    txt("ESC zum Aufstehen",480,395,14,"#efe5d2","center");
+  } else if(overlay==="coffee"){
+    rect(280,160,400,220,"#eadcc4");txt("☕ KAFFEE",480,190,26,"#17131a","center");
+    txt("Lisa setzt sich kurz hin.",480,240,16,"#17131a","center");
+    txt("Ah. Kaffee.",480,275,20,"#6b4b3a","center");
+    txt("ESC",480,330,14,"#17131a","center");
+  } else if(overlay==="window"){
+    rect(180,90,600,360,"#d7c6ad");txt("KÜCHENFENSTER",480,115,22,"#17131a","center");
+    rect(250,165,460,220,"#52735a");txt("viel Grün",480,260,28,"#efe5d2","center");
+    txt("ESC",480,410,14,"#17131a","center");
+  } else if(overlay==="cake"){
+    rect(180,120,600,300,"#eadcc4");txt("EISCAFÉ SIENA",480,145,22,"#17131a","center");
+    txt("Kunde: „Danke, der Kuchen sieht—“",480,215,16,"#17131a","center");
+    txt("SPLAT!",480,260,34,"#9d334d","center");
+    txt("Lisa wirft ihm den Kuchen ins Gesicht.",480,315,15,"#17131a","center");
+    txt("ESC",480,370,14,"#17131a","center");
+  } else if(overlay==="dialogue"){
+    rect(95,360,770,115,"#f2e4ca");rect(115,380,55,55,"#17131a");txt("M",142,394,26,"#efe5d2","center");
+    wrapText(dialogue[dialogueIndex],190,378,630,22,16,"#17131a");
+    txt("E / Enter / Space → weiter",845,445,12,"#5d4c44","right");
+  } else if(overlay==="train"){
+    rect(250,180,460,170,"#17131a");txt("In die Bahn einsteigen",480,220,22,"#efe5d2","center");
+    txt("•  •  •",480,275,28,"#d28aa5","center");
+  } else if(overlay==="work"){
+    rect(230,130,500,260,"#eadcc4");txt("ARBEIT",480,160,26,"#17131a","center");
+    txt("Lisa setzt die Schürze auf.",480,220,17,"#17131a","center");
+    txt("Tablett + Eisbecher: ✓",480,255,17,"#5b6f50","center");
+    txt("ESC zum Aufhören",480,330,14,"#17131a","center");
+  }
+}
+function drawPlayerAt(x,y,s){
+  ctx.save();ctx.translate(x,y);ctx.scale(s,s);
+  rect(-8,-30,18,18,"#1c1717");rect(-11,-24,5,25,"#1c1717");rect(8,-24,5,24,"#1c1717");
+  rect(-6,-22,14,14,"#ead5c2");rect(-8,-9,17,20,["#222","#7c334b","#5b6178"][outfit.top]);
+  rect(-9,10,8,14,["#25242a","#7a5a43","#1d2531"][outfit.bottom]);rect(1,10,8,14,["#25242a","#7a5a43","#1d2531"][outfit.bottom]);
+  ctx.restore();
+}
+function move(){
+  if(overlay) return;
+  let dx=0,dy=0;
+  if(keys.KeyA||keys.ArrowLeft)dx--;if(keys.KeyD||keys.ArrowRight)dx++;
+  if(keys.KeyW||keys.ArrowUp)dy--;if(keys.KeyS||keys.ArrowDown)dy++;
+  if(dx||dy){const l=Math.hypot(dx,dy);player.x+=dx/l*player.speed;player.y+=dy/l*player.speed}
+  player.x=Math.max(25,Math.min(W-25,player.x));player.y=Math.max(75,Math.min(H-35,player.y));
+}
+function near(x,y,r=70){return Math.hypot(player.x-x,player.y-y)<r}
+function interact(){
+  if(overlay==="dialogue"){dialogueIndex++;if(dialogueIndex>=dialogue.length){overlay=null;dialogueIndex=0}else render();return}
+  if(overlay==="train"){overlay="";render();setTimeout(()=>{scene="milan";sub="";player.x=470;player.y=365;overlay=null;render()},5000);return}
+  if(overlay)return;
+  if(scene==="home"){
+    if(sub==="bedroom"){
+      if(near(580,340))overlay="bass";
+      else if(near(760,300))overlay="mirror";
+    } else if(sub==="kitchen"){
+      if(near(170,250))overlay="coffee"; else if(near(680,220))overlay="window";
+    } else if(sub==="hall"){
+      if(near(525,170)){scene="street";player.x=155;player.y=390}
+      else if(near(165,300)){sub="bedroom"}
+      else if(near(455,300)){sub="kitchen"}
+      else if(near(745,300)){sub="living"}
+    } else if(sub==="living"){
+      if(near(800,220)){toastMsg("Der Garten ist nur zum Anschauen.");}
+      // return to hall via left side
+      else if(player.x<100){sub="hall";player.x=850;player.y=320}
+    }
+  } else if(scene==="street"){
+    if(near(155,260)){scene="home";sub="hall";player.x=520;player.y=400}
+    else if(near(480,260)){scene="cafe";player.x=480;player.y=380;musicOn=false;stopMusic();toastMsg("Arbeit: Music automatisch OFF")}
+    else if(near(800,260)){scene="station";player.x=800;player.y=380}
+  } else if(scene==="station"){
+    if(near(800,330))overlay="train";
+  } else if(scene==="cafe"){
+    if(near(785,245))overlay="work";
+    else if(near(170,300))overlay="cake";
+  } else if(scene==="milan"){
+    if(near(480,365)){overlay="dialogue"}
+    else if(player.x<80){scene="station";player.x=800;player.y=380}
+  }
+}
+function keydown(e){
+  keys[e.code]=true;
+  if(["ArrowUp","ArrowDown","ArrowLeft","ArrowRight","Space"].includes(e.code))e.preventDefault();
+  if(e.code==="KeyM"){if(scene==="cafe"){toastMsg("Im Eiscafé ist Music immer OFF.")}else musicSwitch()}
+  if(e.code==="Escape"){overlay=null;render()}
+  if(e.code==="KeyE"||e.code==="Enter"||e.code==="Space"){interact()}
+  if(overlay==="mirror" && ["Digit1","Digit2","Digit3"].includes(e.code)){
+    const n=+e.code.slice(-1)-1;
+    if(e.shiftKey)outfit.bottom=n; else outfit.top=n;
+    toastMsg(e.shiftKey?"Unterteil "+(n+1):"Oberteil "+(n+1));
+  }
+}
+function keyup(e){keys[e.code]=false}
+window.addEventListener("keydown",keydown);window.addEventListener("keyup",keyup);
+document.querySelectorAll("[data-key]").forEach(b=>{
+  const k=b.dataset.key;
+  b.addEventListener("pointerdown",e=>{e.preventDefault();keys[k]=true});
+  b.addEventListener("pointerup",e=>{e.preventDefault();keys[k]=false;if(k==="KeyE")interact();if(k==="KeyM"&&scene!=="cafe")musicSwitch()});
+  b.addEventListener("pointercancel",()=>keys[k]=false);
+});
+function loop(){move();render();requestAnimationFrame(loop)}
+loop();
+</script>
+</body>
+</html>
